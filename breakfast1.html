@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Animations</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- core three.js -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/RGBELoader.js"></script>
+
+    <script>
+
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.outputEncoding = THREE.sRGBEncoding; 
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        document.body.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+
+        // พื้นหลังสีดำ
+        scene.background = new THREE.Color(0x000000);
+
+        const camera = new THREE.PerspectiveCamera(
+            75,
+            window.innerWidth / window.innerHeight,
+            0.1,
+            1000
+        );
+        camera.position.set(0, 2, 5);
+        camera.lookAt(0, 0, 0);
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+        // ===== จัดไฟ =====
+
+        // ไฟแวดล้อมอ่อน ๆ ไม่ให้ส่วนเงามืดสนิท
+        const abmientLight = new THREE.AmbientLight(0xffffff, 0.35);
+        scene.add(abmientLight);
+
+        // ไฟฟ้า-ดิน ให้ด้านบนสว่างกว่าด้านล่างเล็กน้อย
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x222222, 0.4);
+        scene.add(hemiLight);
+
+        // Key light: ไฟหลัก อุ่นเล็กน้อย ทำเงา
+        const directionalLight = new THREE.DirectionalLight(0xfff2e0, 2.0);
+        directionalLight.position.set(8, 12, 8);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.set(2048, 2048);
+        directionalLight.shadow.camera.near = 0.5;
+        directionalLight.shadow.camera.far = 40;
+        directionalLight.shadow.camera.left = -10;
+        directionalLight.shadow.camera.right = 10;
+        directionalLight.shadow.camera.top = 10;
+        directionalLight.shadow.camera.bottom = -10;
+        directionalLight.shadow.bias = -0.0005;
+        directionalLight.shadow.normalBias = 0.02;
+        scene.add(directionalLight);
+
+        // Fill light: ไฟเติมด้านตรงข้าม โทนเย็น ไม่ทำเงา
+        const fillLight = new THREE.DirectionalLight(0xcfe0ff, 0.6);
+        fillLight.position.set(-8, 5, 6);
+        scene.add(fillLight);
+
+        // Rim light: ไฟด้านหลัง ช่วยให้ขอบวัตถุเด่นจากพื้นหลังดำ
+        const rimLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        rimLight.position.set(0, 8, -10);
+        scene.add(rimLight);
+
+        // HDR ใช้เป็นแสงสะท้อนบนวัตถุเท่านั้น (ไม่แสดงเป็นพื้นหลังแล้ว)
+        const hdrUrl = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/limpopo_golf_course_4k.hdr';
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        pmremGenerator.compileEquirectangularShader();
+
+        new THREE.RGBELoader()
+            .load(hdrUrl, (texture) => {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+
+                // สร้าง envMap สำหรับแสงสะท้อนบนวัตถุ
+                const envMap = pmremGenerator.fromEquirectangular(texture).texture;
+
+                scene.environment = envMap; 
+
+                texture.dispose();
+                pmremGenerator.dispose();
+            }, undefined, (error) => {
+                console.error('Unable to load HDR skybox:', error);
+            });
+
+        // โหลดเท็กซ์เจอร์พื้นและสร้าง Plane ขนาด 10x10
+        const texFloor = new THREE.TextureLoader().load('https://pooh-holo47.github.io/pooh.ooo/rocky_terrain_02_diff_1k.jpg');
+        const matFloor = new THREE.MeshStandardMaterial({
+           // map: texFloor
+        }); 
+        const planeGeometry = new THREE.PlaneGeometry(5, 5);
+        const plane = new THREE.Mesh(planeGeometry, matFloor);
+        plane.rotation.x = -Math.PI / 2; 
+        plane.receiveShadow = true;
+        scene.add(plane);
+
+        // load glb และปรับขนาดให้พอดีกับพื้นที่ 10x10 อัตโนมัติ
+        const clock = new THREE.Clock();
+        let mixer;
+        const loader = new THREE.GLTFLoader();
+        loader.load('https://natthinan22.github.io/modelsakti/breakfast.glb', (gltf) => {
+            const model = gltf.scene;
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+
+            const box = new THREE.Box3().setFromObject(model);
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const targetSize = 10;
+            const scale = targetSize / maxDim;
+            model.scale.set(scale, scale, scale);
+
+            box.setFromObject(model);
+            const center = box.getCenter(new THREE.Vector3());
+            model.position.x = -center.x;
+            model.position.z = -center.z;
+            model.position.y = -box.min.y;
+
+            scene.add(model);
+
+            mixer = new THREE.AnimationMixer(model);
+            gltf.animations.forEach((clip) => {
+                mixer.clipAction(clip).play();
+            });
+        });
+      
+        function animate(t) {
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+            
+            controls.update(); 
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+        animate(0);
+
+    </script>
+</body>
+
+</html>
