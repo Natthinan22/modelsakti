@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Animations</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- core three.js -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/RGBELoader.js"></script>
+
+    <script>
+
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.outputEncoding = THREE.sRGBEncoding; 
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        document.body.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+
+        // พื้นหลังสีดำ
+        scene.background = new THREE.Color(0x000000);
+
+        const camera = new THREE.PerspectiveCamera(
+            75,
+            window.innerWidth / window.innerHeight,
+            0.1,
+            1000
+        );
+       
+        camera.position.set(0, 2, 5);
+        camera.lookAt(0, 0, 0);
+        
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // ตัวแปรสำหรับคลิกวัตถุ + เลื่อนกล้อง
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let loadedModel = null;
+        let isFocusing = false;
+        const targetCameraPos = new THREE.Vector3();
+        const targetControlsTarget = new THREE.Vector3();
+
+        // คำที่ใช้จับคู่ชื่อ Mesh/Node (ไม่สนตัวพิมพ์เล็กใหญ่) ดูชื่อจริงได้ที่ Console ตอนคลิก
+        const RECEIPT_KEYWORDS = ['surfpatch'];
+        const MILK_KEYWORDS = ['milk', 'carton', ];
+        const CUBE_KEYWORDS = ['cube'];   // คลิกที่ cube -> กล้องไปหลังกล่องนม
+        const RECEIPT_ZOOM_FACTOR = -0.8;   // ยิ่งน้อยยิ่งซูมใกล้
+        const MILK_BEHIND_DISTANCE = 2.5;  // ระยะกล้องหลังกล่องนม
+
+        // 1. กำหนดตำแหน่งกล้องและเป้าหมายตอนกดปุ่ม Esc (มุมมองภาพรวม)
+        const initialCameraPos = new THREE.Vector3(0, 4, 9);       
+        const initialControlsTarget = new THREE.Vector3(0, 0, 0);  
+
+        // 2. กำหนดตำแหน่งซูมเฉพาะของแต่ละข้อความ (ระบุตามชื่อ Mesh ที่ได้จาก Console)
+        const customZoomConfigs = {
+        "Title.glb": { cam: [0, 3, 5], target: [0, 1.5, 0] },
+        "text.glb": { cam: [0, 3, 5], target: [0, 1.5, 0] },
+        "about.glb": { cam: [0, 3, 5], target: [0, 1.5, 0] },
+        "myjob.glb": { cam: [0, 3, 5], target: [0, 1.5, 0] }
+    };
+
+
+
+        // ไฟแวดล้อมอ่อน ๆ ไม่ให้ส่วนเงามืดสนิท
+        const abmientLight = new THREE.AmbientLight(0xffffff, 0.35);
+        scene.add(abmientLight);
+
+        // ไฟฟ้า-ดิน ให้ด้านบนสว่างกว่าด้านล่างเล็กน้อย
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x222222, 0.4);
+        scene.add(hemiLight);
+
+        // Key light: ไฟหลัก อุ่นเล็กน้อย ทำเงา
+        const directionalLight = new THREE.DirectionalLight(0xfff2e0, 2.0);
+        directionalLight.position.set(8, 12, 8);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.set(2048, 2048);
+        directionalLight.shadow.camera.near = 0.5;
+        directionalLight.shadow.camera.far = 40;
+        directionalLight.shadow.camera.left = -10;
+        directionalLight.shadow.camera.right = 10;
+        directionalLight.shadow.camera.top = 10;
+        directionalLight.shadow.camera.bottom = -10;
+        directionalLight.shadow.bias = -0.0005;
+        directionalLight.shadow.normalBias = 0.02;
+        scene.add(directionalLight);
+
+        // Fill light
+        const fillLight = new THREE.DirectionalLight(0xcfe0ff, 0.6);
+        fillLight.position.set(-8, 5, 6);
+        scene.add(fillLight);
+
+        // Rim light
+        const rimLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        rimLight.position.set(0, 8, -10);
+        //scene.add(rimLight);
+
+        // แสงสะท้อนบนวัตถุ
+        const hdrUrl = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/limpopo_golf_course_4k.hdr';
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        pmremGenerator.compileEquirectangularShader();
+
+        new THREE.RGBELoader()
+            .load(hdrUrl, (texture) => {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+
+                // สร้าง envMap สำหรับแสงสะท้อนบนวัตถุ
+                const envMap = pmremGenerator.fromEquirectangular(texture).texture;
+
+                scene.environment = envMap; 
+
+                texture.dispose();
+                pmremGenerator.dispose();
+            }, undefined, (error) => {
+                console.error('Unable to load HDR skybox:', error);
+            });
+
+        // โหลดเท็กซ์เจอร์พื้นและสร้าง Plane ขนาด 10x10
+        const texFloor = new THREE.TextureLoader().load('https://pooh-holo47.github.io/pooh.ooo/rocky_terrain_02_diff_1k.jpg');
+        const matFloor = new THREE.MeshStandardMaterial({
+           // map: texFloor
+        }); 
+        const planeGeometry = new THREE.PlaneGeometry(5, 5);
+        const plane = new THREE.Mesh(planeGeometry, matFloor);
+        plane.rotation.x = -Math.PI / 2; 
+        plane.receiveShadow = true;
+        scene.add(plane);
+
+        // load glb และปรับขนาดให้พอดีกับพื้นที่ 10x10 อัตโนมัติ
+        const clock = new THREE.Clock();
+        let mixer;
+        const loader = new THREE.GLTFLoader();
+        loader.load('https://natthinan22.github.io/modelsakti/Breakfastfinalversion.glb', (gltf) => {
+            const model = gltf.scene;
+            loadedModel = model;
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+
+            const box = new THREE.Box3().setFromObject(model);
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const targetSize = 10;
+            const scale = targetSize / maxDim;
+            model.scale.set(scale, scale, scale);
+
+            box.setFromObject(model);
+            const center = box.getCenter(new THREE.Vector3());
+            model.position.x = -center.x;
+            model.position.z = -center.z;
+            model.position.y = -box.min.y;
+
+            scene.add(model);
+
+            mixer = new THREE.AnimationMixer(model);
+            gltf.animations.forEach((clip) => {
+                mixer.clipAction(clip).play();
+            });
+        });
+
+        function moveToTarget(camPos, targetPos) {
+            targetCameraPos.copy(camPos);
+            targetControlsTarget.copy(targetPos);
+            isFocusing = true;
+        }
+
+        // หา object ที่คลิก (หรือ parent) ที่ชื่อตรงกับคำค้น
+        function findByKeywords(obj, keywords) {
+            let cur = obj;
+            while (cur && cur !== loadedModel.parent) {
+                const name = (cur.name || '').toLowerCase();
+                if (keywords.some((k) => name.includes(k))) return cur;
+                cur = cur.parent;
+            }
+            return null;
+        }
+
+        // หา object ในโมเดลที่ชื่อตรงกับคำค้น (ใช้หากล่องนมเป็นเป้าหมาย)
+        function findInModel(keywords) {
+            let found = null;
+            loadedModel.traverse((o) => {
+                if (found) return;
+                const name = (o.name || '').toLowerCase();
+                if (keywords.some((k) => name.includes(k))) found = o;
+            });
+            return found;
+        }
+
+        // ซูมเข้าที่ใบเสร็จ (คงมุมที่มองอยู่ แล้วเข้าใกล้)
+        function zoomToReceipt(obj) {
+            const box = new THREE.Box3().setFromObject(obj);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const dist = Math.max(Math.max(size.x, size.y, size.z) * RECEIPT_ZOOM_FACTOR, 1.0);
+            const dir = camera.position.clone().sub(center).normalize();
+            moveToTarget(center.clone().add(dir.multiplyScalar(dist)), center);
+        }
+
+        // เคลื่อนกล้องไปด้านหลังกล่องนม
+        function moveBehindMilk(obj) {
+            const box = new THREE.Box3().setFromObject(obj);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const camPos = new THREE.Vector3(center.x, center.y + size.y * 0.5 + 0.8, box.min.z - MILK_BEHIND_DISTANCE);
+            const lookAt = new THREE.Vector3(center.x, center.y * 0.6, center.z + 5);
+            moveToTarget(camPos, lookAt);
+        }
+
+        window.addEventListener('pointerdown', (event) => {
+            if (!loadedModel) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(loadedModel, true);
+
+            if (intersects.length > 0) {
+                const hitMesh = intersects[0].object;
+                console.log("Clicked Mesh Name:", hitMesh.name, "| parent:", hitMesh.parent && hitMesh.parent.name); // เช็คชื่อ Mesh ใน Console (F12)
+
+                const receipt = findByKeywords(hitMesh, RECEIPT_KEYWORDS);
+                if (receipt) { zoomToReceipt(receipt); return; }
+
+                const cube = findByKeywords(hitMesh, CUBE_KEYWORDS);
+                if (cube) {
+                    const milkBox = findInModel(MILK_KEYWORDS) || cube;
+                    moveBehindMilk(milkBox);
+                    return;
+                }
+
+                const milk = findByKeywords(hitMesh, MILK_KEYWORDS);
+                if (milk) { moveBehindMilk(milk); }
+            }
+        });
+
+        // ถ้าผู้ใช้ลาก/หมุนกล้องเอง ให้หยุดการเลื่อนอัตโนมัติ
+        controls.addEventListener('start', () => { isFocusing = false; });
+
+          // ฟังก์ชันรีเซ็ตมุมมองไปตำแหน่งที่คุณกำหนดเอง (Esc)
+          function resetView() {
+            moveToTarget(initialCameraPos, initialControlsTarget);
+        }
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                resetView();
+            }
+        });
+      
+        function animate(t) {
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+
+            if (isFocusing) {
+                camera.position.lerp(targetCameraPos, 0.08);
+                controls.target.lerp(targetControlsTarget, 0.08);
+
+                if (camera.position.distanceTo(targetCameraPos) < 0.01 && controls.target.distanceTo(targetControlsTarget) < 0.01) {
+                    isFocusing = false;
+                }
+            }
+            
+            controls.update(); 
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+        animate(0);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+
+</html>
